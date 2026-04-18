@@ -364,17 +364,18 @@ def is_target_position_in_workspace(x: float, y: float, z: float) -> bool:
             True if the position is within the workspace.
         """
         
-        threshold = 1e-12
+        # UR5e maximum reach
         maximum_reach = 0.85
-        cylinder_diameter = 0.2
+        # UR5e area on top of the base to avoid
+        cylinder_radius = 0.2
         
         # Avoid the cylinder area on top of the base
-        if math.fabs(math.sqrt(x*x + y*y) - cylinder_diameter) < threshold:
+        if math.sqrt(x*x + y*y) < cylinder_radius:
             # Shoulder singularity.
             print("[MOCK]: To close from the robots base.")
             return False
         
-        if math.fabs(math.sqrt(x*x + y*y + z*z) - maximum_reach) < threshold:
+        if math.sqrt(x*x + y*y + z*z) > maximum_reach:
             # Elbow singularity.
             print("[MOCK]: The robot is fully stretched and cannot go further.")
             return False
