@@ -9,9 +9,11 @@ from enum import Enum, auto
 from typing import Optional
 from dataclasses import dataclass, field
 
-from state_machine.core import StateMachine, BaseTriggers
+from state_machine.core import StateMachine, BaseTriggers 
 from state_machine.defs import StateGroup, State, Trigger
 from state_machine.decorators import on_enter_state, on_state_change
+
+from robot.motion import MotionController
 
 
 class PalletizerState(Enum):
@@ -40,7 +42,9 @@ class Triggers:
     finished_picking = Trigger("finished_picking")
     finished_placing = Trigger("finished_placing")
     cycle_complete = Trigger("cycle_complete")
+    pallet_complete = Trigger("pallet_complete")
     stop = Trigger("stop")
+    reset = Trigger("reset")
 
 
 TRANSITIONS = [
@@ -52,6 +56,9 @@ TRANSITIONS = [
     Triggers.stop.transition(States.running.homing, "ready"),
     Triggers.stop.transition(States.running.picking, "ready"),
     Triggers.stop.transition(States.running.placing, "ready"),
+    Triggers.reset.transition(States.running.homing, "ready"),
+    Triggers.reset.transition(States.running.picking, "ready"),
+    Triggers.reset.transition(States.running.placing, "ready"),
 ]
 
 
@@ -64,8 +71,8 @@ class PalletizerContext:
     pallet_origin_mm: tuple[float, float, float] = (400.0, -200.0, 100.0)
     current_box_index: int = 0
     total_boxes: int = 0
-    pick_position: Optional[tuple[float, float, float]] = None
-    place_positions: list[tuple[float, float, float]] = field(default_factory=list)
+    pick_positions: Optional [list[tuple[float, float, float, float, float, float]]] = None
+    place_positions: list[tuple[float, float, float, float, float, float]] = field(default_factory=list)
     error_message: str = ""
 
 
@@ -78,13 +85,14 @@ class PalletizerStateMachine(StateMachine):
         machine.trigger('start')  # Transitions to HOMING
     """
     
-    def __init__(self):
+    def __init__(self, motion_controller: MotionController):
         super().__init__(
             states=States,
             transitions=TRANSITIONS,
             enable_last_state_recovery=False,
         )
         self.context = PalletizerContext()
+        self.motion_controller = motion_controller
     
     @property
     def current_state(self) -> PalletizerState:
@@ -130,6 +138,7 @@ class PalletizerStateMachine(StateMachine):
         return True
     
     def begin(self) -> bool:
+        self.trigger("start")
         """Start the palletizing sequence."""
         if self.current_state != PalletizerState.IDLE:
             return False
@@ -151,17 +160,23 @@ class PalletizerStateMachine(StateMachine):
     
     def reset(self) -> bool:
         """Reset from FAULT state to IDLE."""
+        if self.current_state == PalletizerState.IDLE:
+            return self.begin()
         try:
-            self.trigger(BaseTriggers.RESET.value)
-            self.context.error_message = ""
-            return True
+            self.trigger("reset")
+            return self.begin()
         except Exception:
             return False
-    
+             
+
     def fault(self, message: str) -> bool:
+        print("FALL INTO: def fault")
         """Transition to FAULT state with an error message."""
         self.context.error_message = message
         try:
+            # Command robot to move to home position
+            self.motion_controller.move_to_home()
+            
             self.trigger(BaseTriggers.TO_FAULT.value)
             return True
         except Exception:
@@ -173,32 +188,94 @@ class PalletizerStateMachine(StateMachine):
     def on_enter_homing(self, _):
         """
         TODO: Implement homing sequence:
-        1. Command robot to move to home position
-        2. Wait for motion to complete
-        3. Call self.trigger('finished_homing') when done
+        1. Command robot to move to home position         (ok)
+        2. Wait for motion to complete                    (ok)
+        3. Call self.trigger('finished_homing') when done (ok)
         """
-        raise NotImplementedError("on_enter_homing")
+        
+        # Command robot to move to home position
+        if not self.motion_controller.move_to_home():
+            self.fault("Fail to return home after startup.")
+            print("Progress:", self.progress)
+            return
+        
+        if not self.motion_controller.is_moving():
+            return
+        
+        self.trigger("finished_homing")
+        
     
     @on_enter_state(States.running.picking)
     def on_enter_picking(self, _):
         """
         TODO: Implement pick sequence:
-        1. Get next pick position and transform camera coords to robot frame
-        2. Execute pick motion (approach -> descend -> grip -> retract)
-        3. Call self.trigger('finished_picking') when done
+        1. Get next pick position and transform camera coords to robot frame (ok)
+        2. Execute pick motion (approach -> descend -> grip -> retract)      (ok)
+        3. Call self.trigger('finished_picking') when done                   (ok)
         """
-        raise NotImplementedError("on_enter_picking")
+        
+        # Check for empty pick position
+        if not self.context.pick_positions[0]:
+            self.fault("No pick position available.")
+            print("Progress:", self.progress)
+            return
+            
+        # If stop has been called
+        if self.current_state != PalletizerState.PICKING:
+            print("Stop triggered.")
+            self.fault("Stop triggered.")
+            print("Progress:", self.progress)
+            return
+        
+        # Execute pick motion (approach -> descend -> grip -> retract)
+        self.motion_controller.move_to_pick(self.context.pick_positions[0])
+        
+        # Clear current pick position 
+        self.context.pick_positions.pop(0)
+        
+        # Trigger finished
+        self.trigger("finished_picking")
+    
     
     @on_enter_state(States.running.placing)
     def on_enter_placing(self, _):
         """
         TODO: Implement place sequence:
-        1. Get next place position from grid
-        2. Execute place motion (approach -> descend -> release -> retract)
-        3. Increment current_box_index
-        4. Call self.trigger('cycle_complete') if done, else self.trigger('finished_placing')
+        1. Get next place position from grid                                                    (ok)
+        2. Execute place motion (approach -> descend -> release -> retract)                     (ok)
+        3. Increment current_box_index                                                          (ok)
+        4. Call self.trigger('cycle_complete') if done, else self.trigger('finished_placing')   (ok)
         """
-        raise NotImplementedError("on_enter_placing")
+        
+        # Check if all boxes are placed
+        if self.context.current_box_index >= len(self.context.place_positions):
+            self.trigger("cycle_complete")
+            return
+        
+        # Get the pose of the current box index
+        place_pose = self.context.place_positions[self.context.current_box_index]
+        
+        # Execute place motion (approach -> descend -> release -> retract)
+        self.motion_controller.move_to_place(place_pose)
+
+        # Increment current_box_index
+        self.context.current_box_index += 1
+
+        # Print palletizer progress
+        print("Progress:", self.progress)
+        print("")
+
+        # Trigger next transition
+        if self.context.current_box_index >= len(self.context.place_positions):
+            if self.context.current_box_index == len(self.context.place_positions):
+                self.fault("No more room on the pallet.")
+                print("Progress:", self.progress)
+                return
+            else:
+                self.trigger("cycle_complete")
+        else:
+            self.trigger("finished_placing")
+        
     
     @on_state_change
     def on_any_state_change(self, old_state: str, new_state: str, trigger: str):
