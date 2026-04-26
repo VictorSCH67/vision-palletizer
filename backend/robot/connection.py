@@ -60,7 +60,7 @@ class RobotConnection:
         self._last_connect_attempt = 0.0
         
         # Uncomment to enable the MOCK mode for the logic validation
-        self._mock_mode = True 
+        #self._mock_mode = True 
     
     def connect(self) -> bool:
         """

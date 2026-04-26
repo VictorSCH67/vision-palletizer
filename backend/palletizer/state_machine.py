@@ -42,7 +42,6 @@ class Triggers:
     finished_picking = Trigger("finished_picking")
     finished_placing = Trigger("finished_placing")
     cycle_complete = Trigger("cycle_complete")
-    pallet_complete = Trigger("pallet_complete")
     stop = Trigger("stop")
     reset = Trigger("reset")
 
@@ -56,9 +55,12 @@ TRANSITIONS = [
     Triggers.stop.transition(States.running.homing, "ready"),
     Triggers.stop.transition(States.running.picking, "ready"),
     Triggers.stop.transition(States.running.placing, "ready"),
+    Triggers.stop.transition("ready", "ready"),
     Triggers.reset.transition(States.running.homing, "ready"),
     Triggers.reset.transition(States.running.picking, "ready"),
     Triggers.reset.transition(States.running.placing, "ready"),
+    Triggers.reset.transition("ready", "ready"),
+    Triggers.reset.transition("fault", "ready"),
 ]
 
 
@@ -71,7 +73,7 @@ class PalletizerContext:
     pallet_origin_mm: tuple[float, float, float] = (400.0, -200.0, 100.0)
     current_box_index: int = 0
     total_boxes: int = 0
-    pick_positions: Optional [list[tuple[float, float, float, float, float, float]]] = None
+    pick_positions: Optional [list[tuple[float, float, float, float, float, float]]] = field(default_factory=list)
     place_positions: list[tuple[float, float, float, float, float, float]] = field(default_factory=list)
     error_message: str = ""
 
@@ -138,10 +140,14 @@ class PalletizerStateMachine(StateMachine):
         return True
     
     def begin(self) -> bool:
-        self.trigger("start")
         """Start the palletizing sequence."""
         if self.current_state != PalletizerState.IDLE:
             return False
+            
+        # Wait for a box to be detected
+        if not is_box_detected(self):
+            return False
+            
         try:
             self.trigger("start")
             return True
@@ -150,6 +156,10 @@ class PalletizerStateMachine(StateMachine):
     
     def stop(self) -> bool:
         """Stop the palletizing sequence and return to IDLE."""
+        
+        # Command robot to move to home position
+        self.motion_controller.move_to_home()
+            
         if self.current_state == PalletizerState.IDLE:
             return True
         try:
@@ -159,12 +169,16 @@ class PalletizerStateMachine(StateMachine):
             return False
     
     def reset(self) -> bool:
-        """Reset from FAULT state to IDLE."""
-        if self.current_state == PalletizerState.IDLE:
-            return self.begin()
+        """Reset the state to IDLE and clear the context."""
+        
+        # Reset the context, we keep the place positions
+        self.context.current_box_index = 0
+        self.context.pick_positions.clear()
+        self.context.error_message = ""
+        
         try:
             self.trigger("reset")
-            return self.begin()
+            return True
         except Exception:
             return False
              
@@ -198,10 +212,7 @@ class PalletizerStateMachine(StateMachine):
             self.fault("Fail to return home after startup.")
             print("Progress:", self.progress)
             return
-        
-        if not self.motion_controller.is_moving():
-            return
-        
+            
         self.trigger("finished_homing")
         
     
@@ -213,20 +224,7 @@ class PalletizerStateMachine(StateMachine):
         2. Execute pick motion (approach -> descend -> grip -> retract)      (ok)
         3. Call self.trigger('finished_picking') when done                   (ok)
         """
-        
-        # Check for empty pick position
-        if not self.context.pick_positions[0]:
-            self.fault("No pick position available.")
-            print("Progress:", self.progress)
-            return
-            
-        # If stop has been called
-        if self.current_state != PalletizerState.PICKING:
-            print("Stop triggered.")
-            self.fault("Stop triggered.")
-            print("Progress:", self.progress)
-            return
-        
+
         # Execute pick motion (approach -> descend -> grip -> retract)
         self.motion_controller.move_to_pick(self.context.pick_positions[0])
         
@@ -266,18 +264,43 @@ class PalletizerStateMachine(StateMachine):
         print("")
 
         # Trigger next transition
-        if self.context.current_box_index >= len(self.context.place_positions):
-            if self.context.current_box_index == len(self.context.place_positions):
-                self.fault("No more room on the pallet.")
-                print("Progress:", self.progress)
-                return
-            else:
-                self.trigger("cycle_complete")
+        #if self.context.current_box_index >= len(self.context.place_positions):
+        if self.context.current_box_index == len(self.context.place_positions):
+            self.fault("No more room on the pallet.")
+            print("Progress:", self.progress)
+            return
+    #        else:
+     #           self.trigger("cycle_complete")
         else:
-            self.trigger("finished_placing")
+            self.trigger("cycle_complete")
         
     
     @on_state_change
     def on_any_state_change(self, old_state: str, new_state: str, trigger: str):
         """Called on every state transition. Useful for logging."""
         pass
+        
+  
+    def is_moving(self) -> bool:
+        """
+        Returns True if the robot is currently moving.
+        """
+        
+        if self.connection.is_mock_mode():
+            time.sleep(1)
+        
+        return True
+    
+    
+def is_box_detected(self) -> bool:
+    """
+    Returns True if self.context.pick_positions is not empty or null
+    """
+     # Check if a box is in the queue
+    if not self.context.pick_positions or len(self.context.pick_positions) == 0:
+        print("No box detected, waiting for vision input.")
+        return False
+    
+    return True
+        
+        

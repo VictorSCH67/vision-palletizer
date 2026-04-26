@@ -97,13 +97,14 @@ def extract_translation_matrix(transformation: np.ndarray) -> np.ndarray:
 
 def get_euler_angle_ZYX(rotation: np.ndarray) -> np.ndarray:
     """
-    From a 3x3 rotation matrix, compute the Euler angle (mobile ZYX convention)
+    From a 3x3 rotation matrix, compute the Euler angle (mobile ZYX = RPY convention)
     Args:
         rotation: 3x3 rotation matrix
     Returns:
         3x1 Euler angle vector (rx, ry, rz)
     """
    
+    # Relative error on a double 2^-52
     EPS = 2.2204 * 10**-16
     rcy = math.sqrt(rotation[0][0] * rotation[0][0] + rotation[1][0]*rotation[1][0])
     

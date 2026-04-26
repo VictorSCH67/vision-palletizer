@@ -13,6 +13,9 @@ import numpy as np
 import json
 from pathlib import Path
 
+#import rtde_control
+#import rtde_receive
+#import socket
 
 from transforms.coordinate import robot_to_camera
 from transforms.coordinate import camera_to_robot
@@ -24,6 +27,7 @@ from robot.motion import MotionController
 from robot.connection import RobotConnection
 
 from palletizer.state_machine import PalletizerStateMachine
+from palletizer.state_machine import PalletizerState
 
 # Create a connection (real or mock)
 conn = RobotConnection() 
@@ -191,7 +195,6 @@ async def configure_palletizer(config: PalletConfig):
 
     # Set the TCP pick poses to the state machine
     Box_Height = 0.001 * config.box_height_mm
-    await read_camera_detection_json()
     
     return {
         "success": True,
@@ -211,9 +214,8 @@ async def start_palletizer():
     if not palletizer_state["state"] == PALLETIZER_STATE_GRID_CONFIGURED:
         return {"success": False, "message": "Palletizer not configured, cannot start."}
         
-    # Start the palletizer sequence
-    sm.begin()
-    return {"success": True, "message": "Palletizer started."}   
+    # Ready to operate 
+    return {"success": True, "message": "Grid configured, palletizer set to IDLE: waiting for a box detection."}   
     
 
 @router.post("/stop", response_model=CommandResponse)
@@ -233,14 +235,10 @@ async def stop_palletizer():
 @router.post("/reset", response_model=CommandResponse)
 async def reset_palletizer():
     """
-    Reset from FAULT state.
-    
-    Clears the fault and returns to IDLE state.
+    Clears the fault and reset to IDLE state.
     """
     
     if sm.reset():
-        # Reset the pick positions list
-        sm.context.pick_positions = []
         return {"success": True, "message": "Palletizer reset to IDLE."}
         
     return {"success": False, "message": "Failed to reset palletizer."}
@@ -253,7 +251,6 @@ async def get_status():
     
     Returns the current state, progress, and any error messages.
     """
-    
     progress = sm.progress
     return StatusResponse(
         state=progress["state"],
@@ -273,7 +270,7 @@ async def simulate_vision_detection(detection: VisionDetection):
     The coordinates are in the camera frame and must be transformed
     to the robot frame before use.
     """
-    global Box_Height
+    global Box_Height  
     
     try:
         Box_Height
@@ -286,10 +283,6 @@ async def simulate_vision_detection(detection: VisionDetection):
     # Compute the input coordinates in the robot frame
     robot_frame = camera_to_robot([detection.x_mm, detection.y_mm, detection.z_mm], [0, 0, detection.yaw_deg])
     
-    # Check for null list
-    if sm.context.pick_positions == None:
-        sm.context.pick_positions = []
-        
     # Set the pick pose to the state machine 
     sm.context.pick_positions.append([
         0.001 * robot_frame[0], 
@@ -300,10 +293,15 @@ async def simulate_vision_detection(detection: VisionDetection):
         np.deg2rad(robot_frame[5])
     ])
     
-    return {
-        "success": True,
-        "message": "Box detected and added to queue."
-    }
+    # Start the palletizer sequence only if its state is IDLE
+    if sm.current_state == PalletizerState.IDLE:
+        # Start palletizer
+        sm.begin()
+        message = "Box detected and palletizer sequence started."
+    else:
+        message = "Box detected and added to queue."
+
+    return {"success": True, "message": message}
     
 
 # ============================================================================
@@ -409,4 +407,4 @@ async def read_camera_detection_json():
             yaw_deg=det.get("yaw_deg", 0.0))
         await simulate_vision_detection(detection_obj)
     
-  
+    

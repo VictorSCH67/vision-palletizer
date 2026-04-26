@@ -30,7 +30,7 @@ class MotionController:
     HIGH_ACCELERATION = 0.75        # m/s² for a moveL - rad/s² for a moveJ
     LOW_VELOCITY = 0.25             # m/s  for a moveL - rad/s² for a moveJ
     LOW_ACCELERATION = 0.25         # m/s² for a moveL - rad/s² for a moveJ
-    WAIT_TIME = 0.1                   # secondes
+    WAIT_TIME = 2                   # secondes
     
     JOINT_TARGET_HOME = [0, -np.pi/2, -np.pi/2, 0, np.pi/2, 0]
     
@@ -363,10 +363,9 @@ def is_target_position_in_workspace(x: float, y: float, z: float) -> bool:
         Returns:
             True if the position is within the workspace.
         """
-        
-        # UR5e maximum reach
+        # UR5 maximum reach
         maximum_reach = 0.85
-        # UR5e area on top of the base to avoid
+        # UR5 hollow to avoid
         cylinder_radius = 0.2
         
         # Avoid the cylinder area on top of the base
@@ -378,6 +377,9 @@ def is_target_position_in_workspace(x: float, y: float, z: float) -> bool:
         if math.sqrt(x*x + y*y + z*z) > maximum_reach:
             # Elbow singularity.
             print("[MOCK]: The robot is fully stretched and cannot go further.")
+            print(x)
+            print(y)
+            print(z)
             return False
         
         # The position is reachable.
